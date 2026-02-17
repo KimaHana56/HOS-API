@@ -1,7 +1,6 @@
 ﻿const express = require('express');
 const { MongoClient } = require('mongodb');
 const cors = require('cors');
-const crypto = require('crypto');
 
 const app = express();
 app.use(cors());
@@ -18,21 +17,14 @@ const uri = `mongodb+srv://${username}:${encodedPassword}@${cluster}/`;
 
 console.log("🚀 啟動服務器...");
 console.log("🔍 Node.js 版本:", process.version);
-console.log("🔍 平台:", process.platform);
 console.log("🔑 連接字符串:", uri.replace(encodedPassword, "****"));
 
-// 創建自定義 TLS 上下文解決 SSL 問題
-const secureContext = crypto.constants ? {
-    secureOptions: crypto.constants.SSL_OP_LEGACY_SERVER_CONNECT
-} : {};
-
+// 簡化連接選項 - 不使用 secureContext
 const client = new MongoClient(uri, {
     tls: true,
     tlsAllowInvalidCertificates: true,
     serverSelectionTimeoutMS: 5000,
     connectTimeoutMS: 10000,
-    socketTimeoutMS: 45000,
-    secureContext: secureContext
 });
 
 // ========== 測試連接 ==========
@@ -43,15 +35,12 @@ async function testConnection() {
         await client.connect();
         console.log("✅ MongoDB 連接成功！");
         
-        // 測試數據庫操作
-        const db = client.db('gameDB');
-        console.log("📊 切換到數據庫: gameDB");
-        
         // 測試 ping
+        const db = client.db('gameDB');
         await db.command({ ping: 1 });
         console.log("✅ 數據庫 ping 成功！");
         
-        // 測試集合訪問
+        // 列出所有集合
         const collections = await db.listCollections().toArray();
         console.log("📋 現有集合:", collections.map(c => c.name).join(', ') || "無");
         
@@ -61,11 +50,6 @@ async function testConnection() {
         console.error("❌ MongoDB 連接失敗！");
         console.error("錯誤類型:", error.name);
         console.error("錯誤訊息:", error.message);
-        console.error("完整錯誤:", error);
-        
-        if (error.message.includes("SSL") || error.message.includes("tls")) {
-            console.log("💡 提示: SSL/TLS 錯誤，已嘗試使用 secureOptions 修復");
-        }
     } finally {
         await client.close();
     }
@@ -89,12 +73,10 @@ app.post('/api/getPlayerData', async (req, res) => {
         
         console.log(`📥 收到請求: steamid=${steamid}, playername=${playername}`);
         
-        // 為每個請求創建新連接
         mongoClient = new MongoClient(uri, {
             tls: true,
             tlsAllowInvalidCertificates: true,
-            serverSelectionTimeoutMS: 5000,
-            secureContext: secureContext
+            serverSelectionTimeoutMS: 5000
         });
         
         await mongoClient.connect();
@@ -162,7 +144,7 @@ app.post('/api/savePlayerData', async (req, res) => {
         mongoClient = new MongoClient(uri, {
             tls: true,
             tlsAllowInvalidCertificates: true,
-            secureContext: secureContext
+            serverSelectionTimeoutMS: 5000
         });
         
         await mongoClient.connect();
@@ -202,7 +184,7 @@ app.post('/api/updateField', async (req, res) => {
         mongoClient = new MongoClient(uri, {
             tls: true,
             tlsAllowInvalidCertificates: true,
-            secureContext: secureContext
+            serverSelectionTimeoutMS: 5000
         });
         
         await mongoClient.connect();
@@ -242,7 +224,7 @@ app.post('/api/addToArray', async (req, res) => {
         mongoClient = new MongoClient(uri, {
             tls: true,
             tlsAllowInvalidCertificates: true,
-            secureContext: secureContext
+            serverSelectionTimeoutMS: 5000
         });
         
         await mongoClient.connect();
@@ -281,7 +263,7 @@ app.post('/api/addMoney', async (req, res) => {
         mongoClient = new MongoClient(uri, {
             tls: true,
             tlsAllowInvalidCertificates: true,
-            secureContext: secureContext
+            serverSelectionTimeoutMS: 5000
         });
         
         await mongoClient.connect();
@@ -319,7 +301,7 @@ app.post('/api/addLevel', async (req, res) => {
         mongoClient = new MongoClient(uri, {
             tls: true,
             tlsAllowInvalidCertificates: true,
-            secureContext: secureContext
+            serverSelectionTimeoutMS: 5000
         });
         
         await mongoClient.connect();
@@ -352,6 +334,15 @@ app.get('/', (req, res) => {
         <p>Status: Running</p>
         <p>Time: ${new Date().toLocaleString()}</p>
         <p>Node Version: ${process.version}</p>
+        <p>API Endpoints:</p>
+        <ul>
+            <li>POST /api/getPlayerData - 獲取/創建玩家</li>
+            <li>POST /api/savePlayerData - 保存完整玩家數據</li>
+            <li>POST /api/updateField - 更新特定欄位</li>
+            <li>POST /api/addToArray - 添加到陣列（購買）</li>
+            <li>POST /api/addMoney - 增加金錢</li>
+            <li>POST /api/addLevel - 增加等級</li>
+        </ul>
     `);
 });
 
