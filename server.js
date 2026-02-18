@@ -18,363 +18,523 @@ console.log("🚀 啟動服務器...");
 console.log("🔍 Node.js 版本:", process.version);
 console.log("🔑 連接字符串:", uri.replace(encodedPassword, "****"));
 
-const client = new MongoClient(uri, {
-    tls: true,
-    tlsAllowInvalidCertificates: true,
-    serverSelectionTimeoutMS: 5000,
-    connectTimeoutMS: 10000,
-});
-
-// ========== 測試連接 ==========
-async function testConnection() {
-    console.log("🔄 正在連接到 MongoDB...");
+// ========== 工具函數 ==========
+async function withMongoClient(operation) {
+    let mongoClient;
     try {
-        await client.connect();
-        console.log("✅ MongoDB 連接成功！");
-        const db = client.db('gameDB');
-        await db.command({ ping: 1 });
-        console.log("✅ 數據庫 ping 成功！");
-        const collections = await db.listCollections().toArray();
-        console.log("📋 現有集合:", collections.map(c => c.name).join(', ') || "無");
-        console.log("🎉 MongoDB 準備就緒！");
-    } catch (error) {
-        console.error("❌ MongoDB 連接失敗！");
-        console.error("錯誤類型:", error.name);
-        console.error("錯誤訊息:", error.message);
+        mongoClient = new MongoClient(uri, { 
+            tls: true, 
+            tlsAllowInvalidCertificates: true,
+            serverSelectionTimeoutMS: 5000 
+        });
+        await mongoClient.connect();
+        return await operation(mongoClient);
     } finally {
-        await client.close();
+        if (mongoClient) await mongoClient.close();
     }
 }
-testConnection();
 
-// ========== 工具函數 ==========
-function getCollection() {
-    const db = client.db('gameDB');
-    return db.collection('players');
-}
+// ========== 基礎 API（純數字）==========
 
-// ========== API 接口 ==========
-
-// 1. 獲取/創建玩家（支援更新名字）
+// 獲取/創建玩家（登入時用一次就好）
 app.post('/api/getPlayerData', async (req, res) => {
-    let mongoClient;
     try {
         const { steamid, playername } = req.body;
         if (!steamid) return res.json({ success: false, error: "需要 SteamID" });
 
-        console.log(`📥 收到請求: steamid=${steamid}, playername=${playername}`);
+        const result = await withMongoClient(async (mongoClient) => {
+            const collection = mongoClient.db('gameDB').collection('players');
+            let player = await collection.findOne({ steamid });
 
-        mongoClient = new MongoClient(uri, { tls: true, tlsAllowInvalidCertificates: true });
-        await mongoClient.connect();
-        const collection = mongoClient.db('gameDB').collection('players');
-
-        let player = await collection.findOne({ steamid });
-
-        if (!player) {
-            const newPlayer = {
-                steamid,
-                playername: playername || "Player",
-                character: { H: 1, S: 1 },
-                skin: { H: {}, S: {} },
-                isBuyAlready: {
-                    character: { H: [1], S: [1] },
-                    skin: { H: {}, S: {} }
-                },
-                money: 0,
-                level: 1,
-                createdAt: new Date(),
-                lastUpdated: new Date()
-            };
-            await collection.insertOne(newPlayer);
-            player = newPlayer;
-            console.log(`✅ 創建新玩家: ${steamid}`);
-        } else {
-            // ✅ 更新玩家名字
-            if (player.playername !== playername) {
+            if (!player) {
+                const newPlayer = {
+                    steamid,
+                    playername: playername || "Player",
+                    hunterCharacter: 1,           // 當前 Hunter 角色
+                    survivorCharacter: 1,         // 當前 Survivor 角色
+                    hunterCharacters: [1],        // 已擁有 Hunter 角色陣列
+                    survivorCharacters: [1],      // 已擁有 Survivor 角色陣列
+                    hunterSkins: {},               // Hunter 皮膚 { "角色ID": [皮膚ID陣列] }
+                    survivorSkins: {},             // Survivor 皮膚 { "角色ID": [皮膚ID陣列] }
+                    money: 0,
+                    level: 1,
+                    createdAt: new Date(),
+                    lastUpdated: new Date()
+                };
+                await collection.insertOne(newPlayer);
+                player = newPlayer;
+                console.log(`✅ 創建新玩家: ${steamid}`);
+            } else if (player.playername !== playername) {
                 await collection.updateOne(
                     { steamid },
                     { $set: { playername, lastUpdated: new Date() } }
                 );
                 player.playername = playername;
-                console.log(`✅ 更新玩家名字: ${steamid} -> ${playername}`);
             }
-            console.log(`✅ 找到現有玩家: ${steamid}`);
-        }
+            return player;
+        });
 
-        res.json({ success: true, data: player });
+        res.json({ success: true, data: result });
     } catch (error) {
-        console.error("❌ 獲取數據錯誤：", error);
         res.json({ success: false, error: error.message });
-    } finally {
-        if (mongoClient) await mongoClient.close();
     }
 });
 
-// 2. 更新特定欄位（通用）
-app.post('/api/updateField', async (req, res) => {
-    let mongoClient;
+// ========== 金錢 API（純數字）==========
+
+// 獲取金錢
+app.post('/api/getMoney', async (req, res) => {
     try {
-        const { steamid, field, value } = req.body;
-        if (!steamid || !field) return res.json({ success: false, error: "缺少必要參數" });
+        const { steamid } = req.body;
+        const result = await withMongoClient(async (mongoClient) => {
+            const collection = mongoClient.db('gameDB').collection('players');
+            const player = await collection.findOne({ steamid });
+            return player ? player.money : null;
+        });
+        res.json({ success: true, money: result });
+    } catch (error) {
+        res.json({ success: false, error: error.message });
+    }
+});
 
-        console.log(`📥 更新欄位: ${steamid} - ${field} = ${value}`);
-
-        mongoClient = new MongoClient(uri, { tls: true, tlsAllowInvalidCertificates: true });
-        await mongoClient.connect();
-        const collection = mongoClient.db('gameDB').collection('players');
-
-        const update = {};
-        update[field] = value;
-        update['lastUpdated'] = new Date();
-
-        await collection.updateOne({ steamid }, { $set: update });
-
-        console.log(`✅ 更新成功: ${steamid} - ${field}`);
+// 設定金錢（直接覆蓋）
+app.post('/api/setMoney', async (req, res) => {
+    try {
+        const { steamid, money } = req.body;  // money 是數字
+        await withMongoClient(async (mongoClient) => {
+            const collection = mongoClient.db('gameDB').collection('players');
+            await collection.updateOne(
+                { steamid },
+                { $set: { money, lastUpdated: new Date() } }
+            );
+        });
         res.json({ success: true });
     } catch (error) {
-        console.error("❌ 更新錯誤：", error);
         res.json({ success: false, error: error.message });
-    } finally {
-        if (mongoClient) await mongoClient.close();
     }
 });
 
-// 3. 購買角色
-app.post('/api/buyCharacter', async (req, res) => {
-    let mongoClient;
-    try {
-        const { steamid, characterType, characterId } = req.body;
-        if (!steamid || !characterType || !characterId) {
-            return res.json({ success: false, error: "缺少必要參數" });
-        }
-
-        mongoClient = new MongoClient(uri, { tls: true, tlsAllowInvalidCertificates: true });
-        await mongoClient.connect();
-        const collection = mongoClient.db('gameDB').collection('players');
-
-        const path = `isBuyAlready.character.${characterType}`;
-        await collection.updateOne(
-            { steamid },
-            {
-                $addToSet: { [path]: characterId },
-                $set: { lastUpdated: new Date() }
-            }
-        );
-
-        console.log(`✅ 購買角色: ${steamid} - ${characterType} ${characterId}`);
-        res.json({ success: true });
-    } catch (error) {
-        console.error("❌ 購買角色錯誤：", error);
-        res.json({ success: false, error: error.message });
-    } finally {
-        if (mongoClient) await mongoClient.close();
-    }
-});
-
-// 4. 購買皮膚
-app.post('/api/buySkin', async (req, res) => {
-    let mongoClient;
-    try {
-        const { steamid, characterType, characterId, skinId } = req.body;
-        if (!steamid || !characterType || !characterId || !skinId) {
-            return res.json({ success: false, error: "缺少必要參數" });
-        }
-
-        mongoClient = new MongoClient(uri, { tls: true, tlsAllowInvalidCertificates: true });
-        await mongoClient.connect();
-        const collection = mongoClient.db('gameDB').collection('players');
-
-        const path = `isBuyAlready.skin.${characterType}.${characterId}`;
-        await collection.updateOne(
-            { steamid },
-            {
-                $addToSet: { [path]: skinId },
-                $set: { lastUpdated: new Date() }
-            }
-        );
-
-        console.log(`✅ 購買皮膚: ${steamid} - ${characterType}${characterId} 皮膚 ${skinId}`);
-        res.json({ success: true });
-    } catch (error) {
-        console.error("❌ 購買皮膚錯誤：", error);
-        res.json({ success: false, error: error.message });
-    } finally {
-        if (mongoClient) await mongoClient.close();
-    }
-});
-
-// 5. 切換當前角色
-app.post('/api/switchCharacter', async (req, res) => {
-    let mongoClient;
-    try {
-        const { steamid, characterType, characterId } = req.body;
-        if (!steamid || !characterType || !characterId) {
-            return res.json({ success: false, error: "缺少必要參數" });
-        }
-
-        mongoClient = new MongoClient(uri, { tls: true, tlsAllowInvalidCertificates: true });
-        await mongoClient.connect();
-        const collection = mongoClient.db('gameDB').collection('players');
-
-        await collection.updateOne(
-            { steamid },
-            {
-                $set: {
-                    [`character.${characterType}`]: characterId,
-                    lastUpdated: new Date()
-                }
-            }
-        );
-
-        console.log(`✅ 切換角色: ${steamid} - ${characterType} → ${characterId}`);
-        res.json({ success: true });
-    } catch (error) {
-        console.error("❌ 切換角色錯誤：", error);
-        res.json({ success: false, error: error.message });
-    } finally {
-        if (mongoClient) await mongoClient.close();
-    }
-});
-
-// 6. 切換當前皮膚
-app.post('/api/switchSkin', async (req, res) => {
-    let mongoClient;
-    try {
-        const { steamid, characterType, characterId, skinId } = req.body;
-        if (!steamid || !characterType || !characterId || !skinId) {
-            return res.json({ success: false, error: "缺少必要參數" });
-        }
-
-        mongoClient = new MongoClient(uri, { tls: true, tlsAllowInvalidCertificates: true });
-        await mongoClient.connect();
-        const collection = mongoClient.db('gameDB').collection('players');
-
-        await collection.updateOne(
-            { steamid },
-            {
-                $set: {
-                    [`skin.${characterType}.${characterId}`]: skinId,
-                    lastUpdated: new Date()
-                }
-            }
-        );
-
-        console.log(`✅ 切換皮膚: ${steamid} - ${characterType}${characterId} 皮膚 ${skinId}`);
-        res.json({ success: true });
-    } catch (error) {
-        console.error("❌ 切換皮膚錯誤：", error);
-        res.json({ success: false, error: error.message });
-    } finally {
-        if (mongoClient) await mongoClient.close();
-    }
-});
-
-// 7. 增加金錢
+// 增加金錢（正數）或減少金錢（負數）
 app.post('/api/addMoney', async (req, res) => {
-    let mongoClient;
     try {
-        const { steamid, amount } = req.body;
-        if (!steamid || amount === undefined) return res.json({ success: false, error: "缺少參數" });
-
-        mongoClient = new MongoClient(uri, { tls: true, tlsAllowInvalidCertificates: true });
-        await mongoClient.connect();
-        const collection = mongoClient.db('gameDB').collection('players');
-
-        await collection.updateOne(
-            { steamid },
-            {
-                $inc: { money: amount },
-                $set: { lastUpdated: new Date() }
-            }
-        );
-
-        console.log(`✅ 增加金錢: ${steamid} +${amount}`);
+        const { steamid, amount } = req.body;  // amount 是數字，可正可負
+        await withMongoClient(async (mongoClient) => {
+            const collection = mongoClient.db('gameDB').collection('players');
+            await collection.updateOne(
+                { steamid },
+                { 
+                    $inc: { money: amount },
+                    $set: { lastUpdated: new Date() }
+                }
+            );
+        });
         res.json({ success: true });
     } catch (error) {
-        console.error("❌ 增加金錢錯誤：", error);
         res.json({ success: false, error: error.message });
-    } finally {
-        if (mongoClient) await mongoClient.close();
     }
 });
 
-// 8. 增加等級
+// ========== 等級 API（純數字）==========
+
+// 獲取等級
+app.post('/api/getLevel', async (req, res) => {
+    try {
+        const { steamid } = req.body;
+        const result = await withMongoClient(async (mongoClient) => {
+            const collection = mongoClient.db('gameDB').collection('players');
+            const player = await collection.findOne({ steamid });
+            return player ? player.level : null;
+        });
+        res.json({ success: true, level: result });
+    } catch (error) {
+        res.json({ success: false, error: error.message });
+    }
+});
+
+// 設定等級（直接覆蓋）
+app.post('/api/setLevel', async (req, res) => {
+    try {
+        const { steamid, level } = req.body;  // level 是數字
+        await withMongoClient(async (mongoClient) => {
+            const collection = mongoClient.db('gameDB').collection('players');
+            await collection.updateOne(
+                { steamid },
+                { $set: { level, lastUpdated: new Date() } }
+            );
+        });
+        res.json({ success: true });
+    } catch (error) {
+        res.json({ success: false, error: error.message });
+    }
+});
+
+// 增加等級（正數）或減少等級（負數）
 app.post('/api/addLevel', async (req, res) => {
-    let mongoClient;
     try {
-        const { steamid, amount } = req.body;
-        if (!steamid || amount === undefined) return res.json({ success: false, error: "缺少參數" });
-
-        mongoClient = new MongoClient(uri, { tls: true, tlsAllowInvalidCertificates: true });
-        await mongoClient.connect();
-        const collection = mongoClient.db('gameDB').collection('players');
-
-        await collection.updateOne(
-            { steamid },
-            {
-                $inc: { level: amount },
-                $set: { lastUpdated: new Date() }
-            }
-        );
-
-        console.log(`✅ 增加等級: ${steamid} +${amount}`);
+        const { steamid, amount } = req.body;  // amount 是數字，可正可負
+        await withMongoClient(async (mongoClient) => {
+            const collection = mongoClient.db('gameDB').collection('players');
+            await collection.updateOne(
+                { steamid },
+                { 
+                    $inc: { level: amount },
+                    $set: { lastUpdated: new Date() }
+                }
+            );
+        });
         res.json({ success: true });
     } catch (error) {
-        console.error("❌ 增加等級錯誤：", error);
         res.json({ success: false, error: error.message });
-    } finally {
-        if (mongoClient) await mongoClient.close();
     }
 });
 
-// 9. 儲存完整玩家數據（覆蓋式）
-app.post('/api/savePlayerData', async (req, res) => {
-    let mongoClient;
+// ========== HUNTER API（純數字和陣列）==========
+
+// 獲取當前 Hunter 角色（純數字）
+app.post('/api/getHunterCharacter', async (req, res) => {
     try {
-        const { steamid, playerData } = req.body;
-        if (!steamid || !playerData) return res.json({ success: false, error: "缺少參數" });
-
-        mongoClient = new MongoClient(uri, { tls: true, tlsAllowInvalidCertificates: true });
-        await mongoClient.connect();
-        const collection = mongoClient.db('gameDB').collection('players');
-
-        playerData.lastUpdated = new Date();
-        playerData.steamid = steamid;
-
-        await collection.updateOne(
-            { steamid },
-            { $set: playerData },
-            { upsert: true }
-        );
-
-        console.log(`✅ 儲存完整數據: ${steamid}`);
-        res.json({ success: true });
+        const { steamid } = req.body;
+        const result = await withMongoClient(async (mongoClient) => {
+            const collection = mongoClient.db('gameDB').collection('players');
+            const player = await collection.findOne({ steamid });
+            return player ? player.hunterCharacter : 1;
+        });
+        res.json({ success: true, character: result });
     } catch (error) {
-        console.error("❌ 儲存錯誤：", error);
         res.json({ success: false, error: error.message });
-    } finally {
-        if (mongoClient) await mongoClient.close();
     }
 });
 
-// 根路徑測試
+// 設定當前 Hunter 角色（純數字）
+app.post('/api/setHunterCharacter', async (req, res) => {
+    try {
+        const { steamid, characterId } = req.body;  // characterId 是數字
+        await withMongoClient(async (mongoClient) => {
+            const collection = mongoClient.db('gameDB').collection('players');
+            await collection.updateOne(
+                { steamid },
+                { $set: { hunterCharacter: characterId, lastUpdated: new Date() } }
+            );
+        });
+        res.json({ success: true });
+    } catch (error) {
+        res.json({ success: false, error: error.message });
+    }
+});
+
+// 獲取所有已擁有 Hunter 角色（純陣列）
+app.post('/api/getHunterCharacters', async (req, res) => {
+    try {
+        const { steamid } = req.body;
+        const result = await withMongoClient(async (mongoClient) => {
+            const collection = mongoClient.db('gameDB').collection('players');
+            const player = await collection.findOne({ steamid });
+            return player ? player.hunterCharacters : [1];
+        });
+        res.json({ success: true, characters: result });
+    } catch (error) {
+        res.json({ success: false, error: error.message });
+    }
+});
+
+// 添加 Hunter 角色到陣列
+app.post('/api/addHunterCharacter', async (req, res) => {
+    try {
+        const { steamid, characterId } = req.body;  // characterId 是數字
+        await withMongoClient(async (mongoClient) => {
+            const collection = mongoClient.db('gameDB').collection('players');
+            await collection.updateOne(
+                { steamid },
+                { 
+                    $addToSet: { hunterCharacters: characterId },
+                    $set: { lastUpdated: new Date() }
+                }
+            );
+        });
+        res.json({ success: true });
+    } catch (error) {
+        res.json({ success: false, error: error.message });
+    }
+});
+
+// 移除 Hunter 角色從陣列
+app.post('/api/removeHunterCharacter', async (req, res) => {
+    try {
+        const { steamid, characterId } = req.body;  // characterId 是數字
+        await withMongoClient(async (mongoClient) => {
+            const collection = mongoClient.db('gameDB').collection('players');
+            await collection.updateOne(
+                { steamid },
+                { 
+                    $pull: { hunterCharacters: characterId },
+                    $set: { lastUpdated: new Date() }
+                }
+            );
+        });
+        res.json({ success: true });
+    } catch (error) {
+        res.json({ success: false, error: error.message });
+    }
+});
+
+// 獲取 Hunter 特定角色的皮膚陣列
+app.post('/api/getHunterSkins', async (req, res) => {
+    try {
+        const { steamid, characterId } = req.body;  // characterId 是數字
+        const result = await withMongoClient(async (mongoClient) => {
+            const collection = mongoClient.db('gameDB').collection('players');
+            const player = await collection.findOne({ steamid });
+            return player?.hunterSkins?.[characterId] || [];
+        });
+        res.json({ success: true, skins: result });
+    } catch (error) {
+        res.json({ success: false, error: error.message });
+    }
+});
+
+// 添加 Hunter 皮膚到陣列
+app.post('/api/addHunterSkin', async (req, res) => {
+    try {
+        const { steamid, characterId, skinId } = req.body;  // 都是數字
+        await withMongoClient(async (mongoClient) => {
+            const collection = mongoClient.db('gameDB').collection('players');
+            const path = `hunterSkins.${characterId}`;
+            await collection.updateOne(
+                { steamid },
+                { 
+                    $addToSet: { [path]: skinId },
+                    $set: { lastUpdated: new Date() }
+                }
+            );
+        });
+        res.json({ success: true });
+    } catch (error) {
+        res.json({ success: false, error: error.message });
+    }
+});
+
+// 移除 Hunter 皮膚從陣列
+app.post('/api/removeHunterSkin', async (req, res) => {
+    try {
+        const { steamid, characterId, skinId } = req.body;  // 都是數字
+        await withMongoClient(async (mongoClient) => {
+            const collection = mongoClient.db('gameDB').collection('players');
+            const path = `hunterSkins.${characterId}`;
+            await collection.updateOne(
+                { steamid },
+                { 
+                    $pull: { [path]: skinId },
+                    $set: { lastUpdated: new Date() }
+                }
+            );
+        });
+        res.json({ success: true });
+    } catch (error) {
+        res.json({ success: false, error: error.message });
+    }
+});
+
+// 設定當前 Hunter 皮膚（純數字）
+app.post('/api/setHunterSkin', async (req, res) => {
+    try {
+        const { steamid, characterId, skinId } = req.body;  // 都是數字
+        await withMongoClient(async (mongoClient) => {
+            const collection = mongoClient.db('gameDB').collection('players');
+            const path = `hunterSkins.${characterId}`;
+            // 注意：這裡是直接設定當前使用的皮膚，不是陣列
+            await collection.updateOne(
+                { steamid },
+                { $set: { [`hunterSkin_${characterId}`]: skinId, lastUpdated: new Date() } }
+            );
+        });
+        res.json({ success: true });
+    } catch (error) {
+        res.json({ success: false, error: error.message });
+    }
+});
+
+// ========== SURVIVOR API（純數字和陣列）==========
+
+// 獲取當前 Survivor 角色（純數字）
+app.post('/api/getSurvivorCharacter', async (req, res) => {
+    try {
+        const { steamid } = req.body;
+        const result = await withMongoClient(async (mongoClient) => {
+            const collection = mongoClient.db('gameDB').collection('players');
+            const player = await collection.findOne({ steamid });
+            return player ? player.survivorCharacter : 1;
+        });
+        res.json({ success: true, character: result });
+    } catch (error) {
+        res.json({ success: false, error: error.message });
+    }
+});
+
+// 設定當前 Survivor 角色（純數字）
+app.post('/api/setSurvivorCharacter', async (req, res) => {
+    try {
+        const { steamid, characterId } = req.body;  // characterId 是數字
+        await withMongoClient(async (mongoClient) => {
+            const collection = mongoClient.db('gameDB').collection('players');
+            await collection.updateOne(
+                { steamid },
+                { $set: { survivorCharacter: characterId, lastUpdated: new Date() } }
+            );
+        });
+        res.json({ success: true });
+    } catch (error) {
+        res.json({ success: false, error: error.message });
+    }
+});
+
+// 獲取所有已擁有 Survivor 角色（純陣列）
+app.post('/api/getSurvivorCharacters', async (req, res) => {
+    try {
+        const { steamid } = req.body;
+        const result = await withMongoClient(async (mongoClient) => {
+            const collection = mongoClient.db('gameDB').collection('players');
+            const player = await collection.findOne({ steamid });
+            return player ? player.survivorCharacters : [1];
+        });
+        res.json({ success: true, characters: result });
+    } catch (error) {
+        res.json({ success: false, error: error.message });
+    }
+});
+
+// 添加 Survivor 角色到陣列
+app.post('/api/addSurvivorCharacter', async (req, res) => {
+    try {
+        const { steamid, characterId } = req.body;  // characterId 是數字
+        await withMongoClient(async (mongoClient) => {
+            const collection = mongoClient.db('gameDB').collection('players');
+            await collection.updateOne(
+                { steamid },
+                { 
+                    $addToSet: { survivorCharacters: characterId },
+                    $set: { lastUpdated: new Date() }
+                }
+            );
+        });
+        res.json({ success: true });
+    } catch (error) {
+        res.json({ success: false, error: error.message });
+    }
+});
+
+// 移除 Survivor 角色從陣列
+app.post('/api/removeSurvivorCharacter', async (req, res) => {
+    try {
+        const { steamid, characterId } = req.body;  // characterId 是數字
+        await withMongoClient(async (mongoClient) => {
+            const collection = mongoClient.db('gameDB').collection('players');
+            await collection.updateOne(
+                { steamid },
+                { 
+                    $pull: { survivorCharacters: characterId },
+                    $set: { lastUpdated: new Date() }
+                }
+            );
+        });
+        res.json({ success: true });
+    } catch (error) {
+        res.json({ success: false, error: error.message });
+    }
+});
+
+// 獲取 Survivor 特定角色的皮膚陣列
+app.post('/api/getSurvivorSkins', async (req, res) => {
+    try {
+        const { steamid, characterId } = req.body;  // characterId 是數字
+        const result = await withMongoClient(async (mongoClient) => {
+            const collection = mongoClient.db('gameDB').collection('players');
+            const player = await collection.findOne({ steamid });
+            return player?.survivorSkins?.[characterId] || [];
+        });
+        res.json({ success: true, skins: result });
+    } catch (error) {
+        res.json({ success: false, error: error.message });
+    }
+});
+
+// 添加 Survivor 皮膚到陣列
+app.post('/api/addSurvivorSkin', async (req, res) => {
+    try {
+        const { steamid, characterId, skinId } = req.body;  // 都是數字
+        await withMongoClient(async (mongoClient) => {
+            const collection = mongoClient.db('gameDB').collection('players');
+            const path = `survivorSkins.${characterId}`;
+            await collection.updateOne(
+                { steamid },
+                { 
+                    $addToSet: { [path]: skinId },
+                    $set: { lastUpdated: new Date() }
+                }
+            );
+        });
+        res.json({ success: true });
+    } catch (error) {
+        res.json({ success: false, error: error.message });
+    }
+});
+
+// 移除 Survivor 皮膚從陣列
+app.post('/api/removeSurvivorSkin', async (req, res) => {
+    try {
+        const { steamid, characterId, skinId } = req.body;  // 都是數字
+        await withMongoClient(async (mongoClient) => {
+            const collection = mongoClient.db('gameDB').collection('players');
+            const path = `survivorSkins.${characterId}`;
+            await collection.updateOne(
+                { steamid },
+                { 
+                    $pull: { [path]: skinId },
+                    $set: { lastUpdated: new Date() }
+                }
+            );
+        });
+        res.json({ success: true });
+    } catch (error) {
+        res.json({ success: false, error: error.message });
+    }
+});
+
+// ========== 根路徑測試 ==========
 app.get('/', (req, res) => {
     res.send(`
         <h1>🚀 HOS Game Save API</h1>
         <p>Status: Running</p>
         <p>Time: ${new Date().toLocaleString()}</p>
         <p>Node Version: ${process.version}</p>
-        <p>API Endpoints:</p>
+        <p>API Endpoints - 全部只傳數字或陣列：</p>
         <ul>
-            <li>POST /api/getPlayerData - 獲取/創建玩家（自動更新名字）</li>
-            <li>POST /api/updateField - 更新任意欄位</li>
-            <li>POST /api/buyCharacter - 購買角色</li>
-            <li>POST /api/buySkin - 購買皮膚</li>
-            <li>POST /api/switchCharacter - 切換當前角色</li>
-            <li>POST /api/switchSkin - 切換當前皮膚</li>
-            <li>POST /api/addMoney - 增加金錢</li>
-            <li>POST /api/addLevel - 增加等級</li>
-            <li>POST /api/savePlayerData - 儲存完整玩家數據</li>
+            <li><strong>=== 基礎 API（純數字）===</strong></li>
+            <li>POST /api/getMoney - 獲取金錢（回傳數字）</li>
+            <li>POST /api/setMoney - 設定金錢（傳數字）</li>
+            <li>POST /api/addMoney - 增減金錢（傳數字，可正可負）</li>
+            <li>POST /api/getLevel - 獲取等級（回傳數字）</li>
+            <li>POST /api/setLevel - 設定等級（傳數字）</li>
+            <li>POST /api/addLevel - 增減等級（傳數字，可正可負）</li>
+            
+            <li><strong>=== HUNTER API（純數字和陣列）===</strong></li>
+            <li>POST /api/getHunterCharacter - 獲取當前 Hunter 角色（回傳數字）</li>
+            <li>POST /api/setHunterCharacter - 設定當前 Hunter 角色（傳數字）</li>
+            <li>POST /api/getHunterCharacters - 獲取所有 Hunter 角色（回傳陣列）</li>
+            <li>POST /api/addHunterCharacter - 添加 Hunter 角色（傳數字）</li>
+            <li>POST /api/removeHunterCharacter - 移除 Hunter 角色（傳數字）</li>
+            <li>POST /api/getHunterSkins - 獲取 Hunter 皮膚陣列（傳角色ID，回傳陣列）</li>
+            <li>POST /api/addHunterSkin - 添加 Hunter 皮膚（傳角色ID和皮膚ID）</li>
+            <li>POST /api/removeHunterSkin - 移除 Hunter 皮膚（傳角色ID和皮膚ID）</li>
+            
+            <li><strong>=== SURVIVOR API（純數字和陣列）===</strong></li>
+            <li>POST /api/getSurvivorCharacter - 獲取當前 Survivor 角色（回傳數字）</li>
+            <li>POST /api/setSurvivorCharacter - 設定當前 Survivor 角色（傳數字）</li>
+            <li>POST /api/getSurvivorCharacters - 獲取所有 Survivor 角色（回傳陣列）</li>
+            <li>POST /api/addSurvivorCharacter - 添加 Survivor 角色（傳數字）</li>
+            <li>POST /api/removeSurvivorCharacter - 移除 Survivor 角色（傳數字）</li>
+            <li>POST /api/getSurvivorSkins - 獲取 Survivor 皮膚陣列（傳角色ID，回傳陣列）</li>
+            <li>POST /api/addSurvivorSkin - 添加 Survivor 皮膚（傳角色ID和皮膚ID）</li>
+            <li>POST /api/removeSurvivorSkin - 移除 Survivor 皮膚（傳角色ID和皮膚ID）</li>
         </ul>
     `);
 });
