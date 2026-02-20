@@ -50,10 +50,10 @@ app.post('/api/getPlayerData', async (req, res) => {
                 const newPlayer = {
                     steamid,
                     playername: playername || "Player",
-                    hunterCharacter: 1,           // 當前 Hunter 角色
-                    survivorCharacter: 1,         // 當前 Survivor 角色
-                    hunterCharacters: [1],        // 已擁有 Hunter 角色陣列
-                    survivorCharacters: [1],      // 已擁有 Survivor 角色陣列
+                    hunterCharacter: 0,           // 當前 Hunter 角色
+                    survivorCharacter: 0,         // 當前 Survivor 角色
+                    hunterCharacters: [0],        // 已擁有 Hunter 角色陣列
+                    survivorCharacters: [0],      // 已擁有 Survivor 角色陣列
                     hunterSkins: {},               // Hunter 皮膚 { "角色ID": [皮膚ID陣列] }
                     survivorSkins: {},             // Survivor 皮膚 { "角色ID": [皮膚ID陣列] }
                     money: 0,
@@ -197,7 +197,7 @@ app.post('/api/getHunterCharacter', async (req, res) => {
         const result = await withMongoClient(async (mongoClient) => {
             const collection = mongoClient.db('gameDB').collection('players');
             const player = await collection.findOne({ steamid });
-            return player ? player.hunterCharacter : 1;
+            return player ? player.hunterCharacter : 0;
         });
         res.json({ success: true, character: result });
     } catch (error) {
@@ -229,7 +229,7 @@ app.post('/api/getHunterCharacters', async (req, res) => {
         const result = await withMongoClient(async (mongoClient) => {
             const collection = mongoClient.db('gameDB').collection('players');
             const player = await collection.findOne({ steamid });
-            return player ? player.hunterCharacters : [1];
+            return player ? player.hunterCharacters : [0];
         });
         res.json({ success: true, characters: result });
     } catch (error) {
@@ -362,7 +362,7 @@ app.post('/api/getSurvivorCharacter', async (req, res) => {
         const result = await withMongoClient(async (mongoClient) => {
             const collection = mongoClient.db('gameDB').collection('players');
             const player = await collection.findOne({ steamid });
-            return player ? player.survivorCharacter : 1;
+            return player ? player.survivorCharacter : 0;
         });
         res.json({ success: true, character: result });
     } catch (error) {
@@ -394,7 +394,7 @@ app.post('/api/getSurvivorCharacters', async (req, res) => {
         const result = await withMongoClient(async (mongoClient) => {
             const collection = mongoClient.db('gameDB').collection('players');
             const player = await collection.findOne({ steamid });
-            return player ? player.survivorCharacters : [1];
+            return player ? player.survivorCharacters : [0];
         });
         res.json({ success: true, characters: result });
     } catch (error) {
